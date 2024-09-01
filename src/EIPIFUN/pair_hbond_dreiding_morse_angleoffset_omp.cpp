@@ -10,10 +10,10 @@
 ------------------------------------------------------------------------- */
 
 /* ----------------------------------------------------------------------
-   Contributing author: Axel Kohlmeyer (Temple U)
+   Contributing author: Axel Kohlmeyer (Temple U), Don Xu/EiPi Fun
 ------------------------------------------------------------------------- */
 
-#include "pair_hbond_dreiding_lj_omp.h"
+#include "pair_hbond_dreiding_morse_angleoffset_omp.h"
 
 #include "atom.h"
 #include "atom_vec.h"
@@ -37,8 +37,8 @@ static constexpr double SMALL = 0.001;
 
 /* ---------------------------------------------------------------------- */
 
-PairHbondDreidingLJOMP::PairHbondDreidingLJOMP(LAMMPS *lmp) :
-  PairHbondDreidingLJ(lmp), ThrOMP(lmp, THR_PAIR)
+PairHbondDreidingMorseAngleoffsetOMP::PairHbondDreidingMorseAngleoffsetOMP(LAMMPS *lmp) :
+  PairHbondDreidingMorseAngleoffset(lmp), ThrOMP(lmp, THR_PAIR)
 {
   suffix_flag |= Suffix::OMP;
   respa_enable = 0;
@@ -47,7 +47,7 @@ PairHbondDreidingLJOMP::PairHbondDreidingLJOMP(LAMMPS *lmp) :
 
 /* ---------------------------------------------------------------------- */
 
-PairHbondDreidingLJOMP::~PairHbondDreidingLJOMP()
+PairHbondDreidingMorseAngleoffsetOMP::~PairHbondDreidingMorseAngleoffsetOMP()
 {
   if (hbcount_thr) {
     delete[] hbcount_thr;
@@ -57,7 +57,7 @@ PairHbondDreidingLJOMP::~PairHbondDreidingLJOMP()
 
 /* ---------------------------------------------------------------------- */
 
-void PairHbondDreidingLJOMP::compute(int eflag, int vflag)
+void PairHbondDreidingMorseAngleoffsetOMP::compute(int eflag, int vflag)
 {
   ev_init(eflag,vflag);
 
@@ -115,16 +115,15 @@ void PairHbondDreidingLJOMP::compute(int eflag, int vflag)
 }
 
 template <int EVFLAG, int EFLAG, int NEWTON_PAIR>
-void PairHbondDreidingLJOMP::eval(int iifrom, int iito, ThrData * const thr)
+void PairHbondDreidingMorseAngleoffsetOMP::eval(int iifrom, int iito, ThrData * const thr)
 {
-  int i,j,k,m,ii,jj,kk,jnum,knum,itype,jtype,ktype,iatom,imol;
+  int i,j,k,m,ii,jj,kk,jnum,knum,itype,jtype,ktype,imol,iatom;
   tagint tagprev;
   double xtmp,ytmp,ztmp,delx,dely,delz,rsq,rsq1,rsq2,r1,r2;
-  double factor_hb,force_angle,force_kernel,evdwl,eng_lj;
+  double factor_hb,force_angle,force_kernel,evdwl;
   double c,s,a,b,ac,a11,a12,a22,vx1,vx2,vy1,vy2,vz1,vz2;
   double fi[3],fj[3],delr1[3],delr2[3];
-  double r2inv,r10inv;
-  double switch1,switch2;
+  double r,dr,dexp,eng_morse,switch1,switch2;
   int *ilist,*jlist,*numneigh,**firstneigh;
   const tagint *klist;
 
@@ -133,9 +132,9 @@ void PairHbondDreidingLJOMP::eval(int iifrom, int iito, ThrData * const thr)
   const auto * _noalias const x = (dbl3_t *) atom->x[0];
   auto * _noalias const f = (dbl3_t *) thr->get_f()[0];
   const tagint * _noalias const tag = atom->tag;
+  const int * _noalias const type = atom->type;
   const int * _noalias const molindex = atom->molindex;
   const int * _noalias const molatom = atom->molatom;
-  const int * _noalias const type = atom->type;
   const double * _noalias const special_lj = force->special_lj;
   const int * const * const nspecial = atom->nspecial;
   const tagint * const * const special = atom->special;
@@ -155,6 +154,7 @@ void PairHbondDreidingLJOMP::eval(int iifrom, int iito, ThrData * const thr)
   double hbeng = 0.0;
 
   for (ii = iifrom; ii < iito; ++ii) {
+
     i = ilist[ii];
     itype = type[i];
     if (!donor[itype]) continue;
@@ -222,33 +222,37 @@ void PairHbondDreidingLJOMP::eval(int iifrom, int iito, ThrData * const thr)
           if (c < -1.0) c = -1.0;
           ac = acos(c);
 
+          ac = ac + pm.angle_offset;
+          c = cos(ac);
+          if (c > 1.0) c = 1.0;
+          if (c < -1.0) c = -1.0;
+
           if (ac > pm.cut_angle && ac < (2.0*MY_PI - pm.cut_angle)) {
             s = sqrt(1.0 - c*c);
             if (s < SMALL) s = SMALL;
 
-            // LJ-specific kernel
+            // Morse-specific kernel
 
-            r2inv = 1.0/rsq;
-            r10inv = r2inv*r2inv*r2inv*r2inv*r2inv;
-            force_kernel = r10inv*(pm.lj1*r2inv - pm.lj2)*r2inv *
-              powint(c,pm.ap);
-            force_angle = pm.ap * r10inv*(pm.lj3*r2inv - pm.lj4) *
-              powint(c,pm.ap-1)*s;
+            r = sqrt(rsq);
+            dr = r - pm.r0;
+            dexp = exp(-pm.alpha * dr);
+            eng_morse = pm.d0 * (dexp*dexp - 2.0*dexp);
+            force_kernel = pm.morse1*(dexp*dexp - dexp)/r * powint(c,pm.ap);
+            force_angle = pm.ap * eng_morse * powint(c,pm.ap-1)*s;
 
-            eng_lj = r10inv*(pm.lj3*r2inv - pm.lj4);
             if (rsq > pm.cut_innersq) {
               switch1 = (pm.cut_outersq-rsq) * (pm.cut_outersq-rsq) *
                         (pm.cut_outersq + 2.0*rsq - 3.0*pm.cut_innersq) /
                         pm.denom_vdw;
               switch2 = 12.0*rsq * (pm.cut_outersq-rsq) *
                         (rsq-pm.cut_innersq) / pm.denom_vdw;
-              force_kernel = force_kernel*switch1 + eng_lj*switch2/rsq;
-              force_angle *= switch1;
-              eng_lj      *= switch1;
+              force_kernel = force_kernel*switch1 + eng_morse*switch2/rsq;
+              force_angle  *= switch1;
+              eng_morse    *= switch1;
             }
 
             if (EFLAG) {
-              evdwl = eng_lj * powint(c,pm.ap);
+              evdwl = eng_morse * powint(c,pm.ap);
               evdwl *= factor_hb;
             }
 
@@ -307,11 +311,11 @@ void PairHbondDreidingLJOMP::eval(int iifrom, int iito, ThrData * const thr)
 
 /* ---------------------------------------------------------------------- */
 
-double PairHbondDreidingLJOMP::memory_usage()
+double PairHbondDreidingMorseAngleoffsetOMP::memory_usage()
 {
   double bytes = memory_usage_thr();
   bytes += (double)comm->nthreads * 2 * sizeof(double);
-  bytes += PairHbondDreidingLJ::memory_usage();
+  bytes += PairHbondDreidingMorseAngleoffset::memory_usage();
 
   return bytes;
 }

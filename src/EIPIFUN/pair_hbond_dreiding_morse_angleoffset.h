@@ -11,39 +11,27 @@
    See the README file in the top-level LAMMPS directory.
 ------------------------------------------------------------------------- */
 
-/* ----------------------------------------------------------------------
-   Contributing author: Axel Kohlmeyer (Temple U)
-------------------------------------------------------------------------- */
-
 #ifdef PAIR_CLASS
 // clang-format off
-PairStyle(hbond/dreiding/lj/omp,PairHbondDreidingLJOMP);
+PairStyle(hbond/dreiding/morse/angleoffset,PairHbondDreidingMorseAngleoffset);
 // clang-format on
 #else
 
-#ifndef LMP_PAIR_HBOND_DREIDING_LJ_OMP_H
-#define LMP_PAIR_HBOND_DREIDING_LJ_OMP_H
+#ifndef LMP_PAIR_HBOND_DREIDING_MORSE_ANGLEOFFSET_H
+#define LMP_PAIR_HBOND_DREIDING_MORSE_ANGLEOFFSET_H
 
-#include "pair_hbond_dreiding_lj.h"
-#include "thr_omp.h"
+#include "pair_hbond_dreiding_lj_angleoffset.h"
 
 namespace LAMMPS_NS {
 
-class PairHbondDreidingLJOMP : public PairHbondDreidingLJ, public ThrOMP {
-
+class PairHbondDreidingMorseAngleoffset : public PairHbondDreidingLJangleoffset {
  public:
-  PairHbondDreidingLJOMP(class LAMMPS *);
-  ~PairHbondDreidingLJOMP() override;
+  PairHbondDreidingMorseAngleoffset(class LAMMPS *);
 
   void compute(int, int) override;
-  double memory_usage() override;
-
- protected:
-  double *hbcount_thr, *hbeng_thr;
-
- private:
-  template <int EVFLAG, int EFLAG, int NEWTON_PAIR>
-  void eval(int ifrom, int ito, ThrData *const thr);
+  void coeff(int, char **) override;
+  void init_style() override;
+  double single(int, int, int, int, double, double, double, double &) override;
 };
 
 }    // namespace LAMMPS_NS
